@@ -1,434 +1,574 @@
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Primor Modas - Atacado de Moda Evangélica</title>
-    <!-- Inclui o Tailwind CSS para estilização rápida e responsiva -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Configuração do Tailwind para usar a fonte Inter e cores personalizadas da imagem -->
-    <script>
-        tailwind.config = {
-            theme: {
-                extend: {
-                    fontFamily: {
-                        sans: ['Inter', 'sans-serif'], // Mantém Inter, que é limpa e moderna
-                    },
-                    colors: {
-                        primary: '#6B4F4F', // Marrom mais escuro para elementos principais (títulos, botões, etc.)
-                        secondary: '#C8A88E', // Bege/dourado para acentos (fundos de seção, detalhes)
-                        light: '#F8F4E3', // Bege claro para fundos gerais
-                        dark: '#3A2B2B', // Marrom muito escuro para texto principal e rodapé
-                    }
+import React, { useState, useEffect, useRef } from 'react';
+import { initializeApp } from 'firebase/app';
+import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from 'firebase/auth';
+import { getFirestore, collection, addDoc, onSnapshot, query, orderBy, serverTimestamp, doc, updateDoc, deleteDoc, getDoc } from 'firebase/firestore';
+
+// Define the Firebase configuration and app ID, which are provided by the environment.
+// If not available, default values are used for local development/testing.
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-hospital-app-id';
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+// Urgency levels with their names, Tailwind CSS colors, and priority levels.
+// Lower 'level' value means higher urgency (e.g., Vermelho is 1, Azul is 5).
+const urgencyLevels = [
+    { name: 'Vermelho', color: 'bg-red-500', text: 'text-red-900', level: 1, description: 'Emergência (risco de morte iminente)' },
+    { name: 'Laranja', color: 'bg-orange-500', text: 'text-orange-900', level: 2, description: 'Muito Urgente (risco significativo)' },
+    { name: 'Amarelo', color: 'bg-yellow-500', text: 'text-yellow-900', level: 3, description: 'Urgente (condição séria)' },
+    { name: 'Verde', color: 'bg-green-500', text: 'text-green-900', level: 4, description: 'Pouco Urgente (baixa complexidade)' },
+    { name: 'Azul', color: 'bg-blue-500', text: 'text-blue-900', level: 5, description: 'Não Urgente (casos eletivos)' },
+];
+
+/**
+ * Main application component for the Hospital Password Manager.
+ * Manages patient queues, urgency categorization, and real-time updates with Firebase.
+ */
+export default function App() {
+    // State variables for Firebase services and user information.
+    const [db, setDb] = useState(null);
+    const [auth, setAuth] = useState(null);
+    const [userId, setUserId] = useState(null);
+    const [isAuthReady, setIsAuthReady] = useState(false); // Flag to ensure auth is ready before Firestore ops
+
+    // State variables for patient data and UI elements.
+    const [patients, setPatients] = useState([]); // List of patients in the queue
+    const [currentServing, setCurrentServing] = useState(null); // Patient currently being served
+    const [newPatientName, setNewPatientName] = useState(''); // Input for new patient name
+    const [newPatientUrgency, setNewPatientUrgency] = useState(urgencyLevels[3].name); // Default to 'Verde'
+    const [passwordCounter, setPasswordCounter] = useState({}); // Stores next available password number per urgency type
+    const [message, setMessage] = useState({ text: '', type: '' }); // For displaying messages (success/error)
+    const [showConfirmModal, setShowConfirmModal] = useState(false); // State for confirmation modal
+    const confirmActionRef = useRef(null); // Ref to store the function to be executed on confirmation
+
+    // ---------------------------------------------------
+    // Firebase Initialization and Authentication
+    // ---------------------------------------------------
+    useEffect(() => {
+        try {
+            const app = initializeApp(firebaseConfig);
+            const firestore = getFirestore(app);
+            const firebaseAuth = getAuth(app);
+
+            setDb(firestore);
+            setAuth(firebaseAuth);
+
+            // Listen for authentication state changes
+            const unsubscribeAuth = onAuthStateChanged(firebaseAuth, async (user) => {
+                if (user) {
+                    setUserId(user.uid);
+                    console.log('Firebase authenticated. User ID:', user.uid);
+                } else {
+                    // Sign in anonymously if no user is present
+                    console.log('No user, signing in anonymously...');
+                    await signInAnonymously(firebaseAuth);
+                    setUserId(firebaseAuth.currentUser?.uid || crypto.randomUUID());
                 }
-            }
-        }
-    </script>
-    <style>
-        /* Estilos adicionais para sobrepor ou refinar o Tailwind, se necessário */
-        .shadow-subtle {
-            box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
-        }
-    </style>
-</head>
-<body class="font-sans bg-light text-dark antialiased">
-    <!-- Navbar (CABEÇALHO FIXO) -->
-    <header class="bg-white shadow-subtle sticky top-0 z-50">
-        <nav class="container mx-auto px-4 py-3 sm:px-6 sm:py-4 flex justify-between items-center">
-            <!-- Logotipo da Loja -->
-            <a href="#" class="text-xl sm:text-2xl font-bold text-primary flex items-center">
-                <img src="https://placehold.co/60x60/C8A88E/3A2B2B?text=LOGO" alt="Logo da Loja" class="h-8 w-8 sm:h-10 sm:w-10 mr-2 rounded-lg">
-                PRIMOR MODAS
-            </a>
-            <!-- Menu de Navegação para Desktop -->
-            <div class="hidden md:flex space-x-6 lg:space-x-8 text-dark text-lg font-medium">
-                <a href="#como-comprar" class="hover:text-secondary transition duration-200">Como Comprar</a>
-                <a href="#feedbacks" class="hover:text-secondary transition duration-200">Feedbacks</a>
-                <a href="#lancamentos" class="hover:text-secondary transition duration-200">Lançamentos</a>
-                <a href="#cadastro" class="hover:text-secondary transition duration-200">Cadastro</a>
-                <a href="#compre-online" class="hover:text-secondary transition duration-200">Compre Online</a>
-                <a href="#duvidas" class="hover:text-secondary transition duration-200">Dúvidas</a>
-                <a href="#" class="hover:text-secondary transition duration-200">Materiais</a>
-            </div>
-            <!-- Botão de Menu para Mobile -->
-            <button id="mobile-menu-button" class="md:hidden p-2 text-primary focus:outline-none rounded-md hover:bg-light">
-                <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-4 6h4"></path></svg>
-            </button>
-        </nav>
-        <!-- Menu Mobile (oculto por padrão) -->
-        <div id="mobile-menu" class="md:hidden hidden bg-white py-2 shadow-subtle">
-            <a href="#como-comprar" class="block px-6 py-3 text-dark hover:bg-light">Como Comprar</a>
-            <a href="#feedbacks" class="block px-6 py-3 text-dark hover:bg-light">Feedbacks</a>
-            <a href="#lancamentos" class="block px-6 py-3 text-dark hover:bg-light">Lançamentos</a>
-            <a href="#cadastro" class="block px-6 py-3 text-dark hover:bg-light">Cadastro</a>
-            <a href="#compre-online" class="block px-6 py-3 text-dark hover:bg-light">Compre Online</a>
-            <a href="#duvidas" class="block px-6 py-3 text-dark hover:bg-light">Dúvidas</a>
-            <a href="#" class="block px-6 py-3 text-dark hover:bg-light">Materiais</a>
-        </div>
-    </header>
-
-    <main>
-        <!-- Banner Principal com Texto Centralizado -->
-        <section id="banner" class="relative w-full h-64 sm:h-80 md:h-96 bg-gray-200 flex items-center justify-center overflow-hidden rounded-b-lg shadow-subtle"
-                 style="background-image: url('https://placehold.co/1200x400/C8A88E/6B4F4F?text=Elegância+para+sua+Loja'); background-size: cover; background-position: center;">
-            <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center px-4">
-                <h1 class="text-3xl sm:text-4xl md:text-5xl font-bold text-white text-center tracking-tight drop-shadow-lg">Moda Evangélica no Atacado</h1>
-            </div>
-            <!-- Indicadores de Carrossel (sutis, se houvesse rotação) -->
-            <div class="absolute bottom-4 left-0 right-0 flex justify-center space-x-2">
-                <span class="w-2 h-2 bg-white rounded-full opacity-70"></span>
-                <span class="w-2 h-2 bg-white rounded-full opacity-30"></span>
-                <span class="w-2 h-2 bg-white rounded-full opacity-30"></span>
-            </div>
-        </section>
-
-        <!-- Seção de Boas-Vindas e Política Comercial -->
-        <section class="container mx-auto px-4 py-16 sm:py-20 flex flex-col md:flex-row items-start justify-center gap-10 sm:gap-16">
-            <!-- Vídeo da Vendedora -->
-            <div class="w-full md:w-1/2 bg-white rounded-xl shadow-subtle overflow-hidden">
-                <video controls class="w-full h-auto rounded-t-xl" poster="https://placehold.co/600x400/F8F4E3/3A2B2B?text=Video+Bem-Vinda">
-                    <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
-                    Seu navegador não suporta a tag de vídeo.
-                </video>
-                <div class="p-6 sm:p-8 text-center">
-                    <h2 class="text-xl sm:text-2xl font-semibold text-dark mb-3 sm:mb-4">Bem-vinda à Primor Modas Atacado!</h2>
-                    <p class="text-base sm:text-lg text-gray-700 leading-relaxed">Assista ao nosso vídeo de boas-vindas para conhecer a filosofia da Primor Modas e as vantagens de se tornar um parceiro. Nossa vendedora explica tudo com clareza e transparência.</p>
-                </div>
-            </div>
-            <!-- Descrição da Política Comercial -->
-            <div class="w-full md:w-1/2 bg-white p-8 sm:p-10 rounded-xl shadow-subtle">
-                <h2 class="text-2xl sm:text-3xl font-bold text-primary mb-6 sm:mb-8 leading-tight">Condições Exclusivas para Atacado</h2>
-                <ul class="list-disc pl-5 sm:pl-6 text-dark space-y-3 sm:space-y-4 text-base sm:text-lg">
-                    <li><strong>Mínimo Flexível:</strong> Comece com apenas 6 peças, ideal para otimizar seu estoque.</li>
-                    <li><strong>Preços Competitivos:</strong> Garanta as melhores margens de lucro para seu negócio.</li>
-                    <li><strong>Qualidade Premium:</strong> Peças com acabamento impecável e tecidos selecionados.</li>
-                    <li><strong>Lançamentos Constantes:</b> Novidades semanais para sua loja sempre atualizada.</li>
-                    <li><strong>Suporte Dedicado:</strong> Conte com consultoras prontas para auxiliar suas escolhas.</li>
-                    <li><strong>Envio para Todo o Brasil:</strong> Receba seus pedidos com agilidade e segurança.</li>
-                </ul>
-                <p class="mt-6 sm:mt-8 text-base sm:text-lg text-gray-700 italic">Compromisso com o seu sucesso e a satisfação de suas clientes.</p>
-            </div>
-        </section>
-
-        <!-- Seção de Feedbacks (Testemunhos) -->
-        <section id="feedbacks" class="bg-secondary bg-opacity-20 px-4 py-16 sm:py-20">
-            <div class="container mx-auto text-center">
-                <h2 class="text-2xl sm:text-3xl font-bold text-primary mb-8 sm:mb-12">O que Nossos Parceiros Dizem</h2>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8" id="feedback-container">
-                    <!-- Feedback Item 1 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle flex flex-col items-center justify-between transition transform hover:-translate-y-1 duration-300 cursor-pointer">
-                        <div class="mb-4 sm:mb-6">
-                            <span class="text-secondary text-4xl sm:text-5xl leading-none block mb-2">“</span>
-                            <p class="italic text-gray-700 text-base sm:text-lg line-clamp-4" data-full-text="A qualidade das roupas da Primor Modas é impecável! Minhas clientes amam e as vendas aumentaram muito desde que comecei a revender. O atendimento é sempre excelente e as entregas são super rápidas. Recomendo muito para quem busca moda evangélica de verdade.">
-                                A qualidade das roupas da Primor Modas é impecável! Minhas clientes amam e as vendas aumentaram muito desde que comecei a revender.
-                            </p>
-                            <span class="text-secondary text-4xl sm:text-5xl leading-none block mt-2">”</span>
-                        </div>
-                        <p class="font-semibold text-dark mt-4 text-sm sm:text-base">- Ana Paula, Lojista em SP</p>
-                    </div>
-                    <!-- Feedback Item 2 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle flex flex-col items-center justify-between transition transform hover:-translate-y-1 duration-300 cursor-pointer">
-                        <div class="mb-4 sm:mb-6">
-                            <span class="text-secondary text-4xl sm:text-5xl leading-none block mb-2">“</span>
-                            <p class="italic text-gray-700 text-base sm:text-lg line-clamp-4" data-full-text="Estou muito satisfeita com a variedade e os lançamentos semanais. É muito fácil manter meu estoque atualizado e oferecer sempre o melhor para minhas clientes. A equipe de consultoras é muito atenciosa e prestativa.">
-                                Estou muito satisfeita com a variedade e os lançamentos semanais. É muito fácil manter meu estoque atualizado e oferecer sempre o melhor para minhas clientes.
-                            </p>
-                            <span class="text-secondary text-4xl sm:text-5xl leading-none block mt-2">”</span>
-                        </div>
-                        <p class="font-semibold text-dark mt-4 text-sm sm:text-base">- Carla Regina, Revendedora em MG</p>
-                    </div>
-                    <!-- Feedback Item 3 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle flex flex-col items-center justify-between transition transform hover:-translate-y-1 duration-300 cursor-pointer">
-                        <div class="mb-4 sm:mb-6">
-                            <span class="text-secondary text-4xl sm:text-5xl leading-none block mb-2">“</span>
-                            <p class="italic text-gray-700 text-base sm:text-lg line-clamp-4" data-full-text="Os preços de atacado da Primor Modas me permitem ter uma margem de lucro excelente. Além disso, a facilidade de comprar online pelo catálogo é um diferencial enorme. Recomendo a todas as lojistas e revendedoras!">
-                                Os preços de atacado da Primor Modas me permitem ter uma margem de lucro excelente. Além disso, a facilidade de comprar online pelo catálogo é um diferencial enorme.
-                            </p>
-                            <span class="text-secondary text-4xl sm:text-5xl leading-none block mt-2">”</span>
-                        </div>
-                        <p class="font-semibold text-dark mt-4 text-sm sm:text-base">- Patrícia Lima, Lojista em RJ</p>
-                    </div>
-                </div>
-                <!-- Botão para ver mais feedbacks (Simulação de rolagem infinita) -->
-                <button id="load-more-feedbacks" class="mt-10 sm:mt-12 bg-primary text-white py-3 sm:py-4 px-8 sm:px-10 rounded-full shadow-md hover:bg-secondary transition duration-300 text-base sm:text-lg font-semibold">
-                    Ver Todos os Testemunhos
-                </button>
-            </div>
-        </section>
-
-        <!-- Seção de Lançamentos da Semana -->
-        <section id="lancamentos" class="container mx-auto px-4 py-16 sm:py-20 text-center">
-            <h2 class="text-2xl sm:text-3xl font-bold text-primary mb-8 sm:mb-12">Lançamentos da Semana</h2>
-            <p class="text-gray-700 text-base sm:text-lg mb-8 sm:mb-10">Descubra as novidades que acabaram de chegar! Clique nas imagens para ver mais detalhes e expandir a coleção.</p>
-            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8" id="lancamentos-grid">
-                <!-- Imagem de Lançamento 1 -->
-                <div class="relative group rounded-xl overflow-hidden shadow-subtle cursor-pointer">
-                    <img src="https://placehold.co/600x800/C8A88E/6B4F4F?text=Novo+Vestido" alt="Novo Vestido" class="w-full h-80 sm:h-96 object-cover transition-transform duration-300 group-hover:scale-105">
-                    <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        <p class="text-white text-lg sm:text-xl font-semibold">Ver Detalhes</p>
-                    </div>
-                </div>
-                <!-- Imagem de Lançamento 2 -->
-                <div class="relative group rounded-xl overflow-hidden shadow-subtle cursor-pointer">
-                    <img src="https://placehold.co/600x800/C8A88E/6B4F4F?text=Saia+Longa" alt="Saia Longa" class="w-full h-80 sm:h-96 object-cover transition-transform duration-300 group-hover:scale-105">
-                    <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        <p class="text-white text-lg sm:text-xl font-semibold">Ver Detalhes</p>
-                    </div>
-                </div>
-                <!-- Imagem de Lançamento 3 (oculta inicialmente) -->
-                <div class="relative group rounded-xl overflow-hidden shadow-subtle cursor-pointer hidden">
-                    <img src="https://placehold.co/600x800/C8A88E/6B4F4F?text=Blusa+Elegante" alt="Blusa Elegante" class="w-full h-80 sm:h-96 object-cover transition-transform duration-300 group-hover:scale-105">
-                    <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        <p class="text-white text-lg sm:text-xl font-semibold">Ver Detalhes</p>
-                    </div>
-                </div>
-                 <!-- Imagem de Lançamento 4 (oculta inicialmente) -->
-                 <div class="relative group rounded-xl overflow-hidden shadow-subtle cursor-pointer hidden">
-                    <img src="https://placehold.co/600x800/C8A88E/6B4F4F?text=Conjunto+Novo" alt="Conjunto Novo" class="w-full h-80 sm:h-96 object-cover transition-transform duration-300 group-hover:scale-105">
-                    <div class="absolute inset-0 bg-black bg-opacity-30 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300">
-                        <p class="text-white text-lg sm:text-xl font-semibold">Ver Detalhes</p>
-                    </div>
-                </div>
-            </div>
-            <button id="load-more-lancamentos" class="mt-10 sm:mt-12 bg-primary text-white py-3 sm:py-4 px-8 sm:px-10 rounded-full shadow-md hover:bg-secondary transition duration-300 text-base sm:text-lg font-semibold">
-                Explorar Coleção Completa
-            </button>
-        </section>
-
-        <!-- Seção de Cadastro e Contato com Consultora -->
-        <section id="cadastro" class="bg-dark px-4 py-16 sm:py-20 text-white">
-            <div class="container mx-auto flex flex-col md:flex-row items-center justify-center gap-10 sm:gap-16">
-                <div class="w-full md:w-1/2 text-center md:text-left">
-                    <h2 class="text-3xl sm:text-4xl font-bold mb-4 sm:mb-6 leading-tight">Cadastre-se e Transforme Suas Vendas.</h2>
-                    <p class="text-base sm:text-lg mb-6 sm:mb-8 text-gray-300">Preencha o formulário e nossa equipe de consultoras exclusivas entrará em contato para apresentar todas as vantagens de ser um parceiro Primor Modas.</p>
-                    <ul class="list-disc pl-5 sm:pl-6 text-base sm:text-lg space-y-2 sm:space-y-3 text-gray-200">
-                        <li>Acesso a condições especiais de atacado.</li>
-                        <li>Atendimento personalizado e dedicado.</li>
-                        <li>Lançamentos e promoções em primeira mão.</li>
-                        <li>Suporte completo para suas compras e dúvidas.</li>
-                    </ul>
-                </div>
-                <!-- Formulário de Cadastro -->
-                <div class="w-full md:w-1/2 bg-white p-8 sm:p-10 rounded-xl shadow-subtle">
-                    <h3 class="text-xl sm:text-2xl font-bold text-primary mb-6 sm:mb-8 text-center">Fale Conosco</h3>
-                    <form>
-                        <div class="mb-4 sm:mb-6">
-                            <label for="nome" class="block text-dark text-sm font-semibold mb-2">Nome Completo:</label>
-                            <input type="text" id="nome" name="nome" class="shadow-sm appearance-none border border-secondary rounded-lg w-full py-2 sm:py-3 px-3 sm:px-4 text-dark leading-tight focus:outline-none focus:ring-2 focus:ring-primary" placeholder="Seu nome completo">
-                        </div>
-                        <div class="mb-4 sm:mb-6">
-                            <label for="email" class="block text-dark text-sm font-semibold mb-2">E-mail:</label>
-                            <input type="email" id="email" name="email" class="shadow-sm appearance-none border border-secondary rounded-lg w-full py-2 sm:py-3 px-3 sm:px-4 text-dark leading-tight focus:outline-none focus:ring-2 focus:ring-primary" placeholder="seu.email@exemplo.com">
-                        </div>
-                        <div class="mb-6 sm:mb-8">
-                            <label for="whatsapp" class="block text-dark text-sm font-semibold mb-2">WhatsApp (com DDD):</label>
-                            <input type="text" id="whatsapp" name="whatsapp" class="shadow-sm appearance-none border border-secondary rounded-lg w-full py-2 sm:py-3 px-3 sm:px-4 text-dark leading-tight focus:outline-none focus:ring-2 focus:ring-primary" placeholder="(XX) XXXXX-XXXX">
-                        </div>
-                        <button type="submit" class="bg-primary text-white font-bold py-3 sm:py-4 px-6 sm:px-8 rounded-full w-full hover:bg-secondary transition duration-300 shadow-md text-base sm:text-lg">Enviar Cadastro</button>
-                    </form>
-                </div>
-            </div>
-        </section>
-
-        <!-- Seção de Como Comprar Online e Catálogo -->
-        <section id="compre-online" class="container mx-auto px-4 py-16 sm:py-20 flex flex-col md:flex-row items-start justify-center gap-10 sm:gap-16">
-            <!-- Vídeo Explicativo -->
-            <div class="w-full md:w-1/2 bg-white rounded-xl shadow-subtle overflow-hidden">
-                <video controls class="w-full h-auto rounded-t-xl" poster="https://placehold.co/600x400/F8F4E3/3A2B2B?text=Video+Comprar+Online">
-                    <source src="https://www.w3schools.com/html/mov_bbb.mp4" type="video/mp4">
-                    Seu navegador não suporta a tag de vídeo.
-                </video>
-                <div class="p-6 sm:p-8 text-center">
-                    <h2 class="text-xl sm:text-2xl font-semibold text-dark mb-3 sm:mb-4">Guia Rápido: Como Comprar Online</h2>
-                    <p class="text-base sm:text-lg text-gray-700 leading-relaxed">Assista a este vídeo para aprender a fazer seus pedidos diretamente pelo nosso catálogo online. Um processo simples, rápido e prático, sem a necessidade de contato inicial com a vendedora.</p>
-                </div>
-            </div>
-            <!-- Link para o Catálogo -->
-            <div class="w-full md:w-1/2 bg-white p-8 sm:p-10 rounded-xl shadow-subtle text-center">
-                <h2 class="text-2xl sm:text-3xl font-bold text-primary mb-6 sm:mb-8 leading-tight">Acesse Nosso Catálogo Exclusivo</h2>
-                <p class="text-base sm:text-lg text-gray-700 mb-8 sm:mb-10">Explore toda a nossa coleção disponível para atacado. Navegue com facilidade, selecione suas peças e finalize seu pedido de forma totalmente autônoma.</p>
-                <a href="#" class="bg-primary text-white font-bold py-3 sm:py-4 px-8 sm:px-12 rounded-full shadow-md hover:bg-secondary transition duration-300 text-base sm:text-xl inline-flex items-center justify-center">
-                    Acessar Catálogo Agora
-                    <svg class="w-5 h-5 sm:w-6 sm:h-6 ml-2 sm:ml-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.25 8.25L21 12m0 0l-3.75 3.75M21 12H3"></path></svg>
-                </a>
-                <p class="mt-4 sm:mt-6 text-xs sm:text-sm text-gray-700">Compras a partir de 6 peças. Agilidade e praticidade garantidas.</p>
-            </div>
-        </section>
-
-        <!-- Seção de Perguntas Frequentes (FAQ) -->
-        <section id="duvidas" class="bg-secondary bg-opacity-20 px-4 py-16 sm:py-20">
-            <div class="container mx-auto text-center">
-                <h2 class="text-2xl sm:text-3xl font-bold text-primary mb-8 sm:mb-12">Perguntas Frequentes</h2>
-                <p class="text-gray-700 text-base sm:text-lg mb-8 sm:mb-10">Encontre respostas rápidas para as dúvidas mais comuns sobre nossos produtos, formas de pagamento e o processo de compra no atacado.</p>
-
-                <div class="space-y-4 sm:space-y-6 max-w-4xl mx-auto">
-                    <!-- Pergunta 1 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle cursor-pointer toggle-faq">
-                        <div class="flex justify-between items-center">
-                            <h3 class="text-base sm:text-lg font-semibold text-dark">Qual o valor mínimo para compra no atacado?</h3>
-                            <svg class="w-6 h-6 text-primary transform transition-transform duration-300" data-lucide="chevron-down"></svg>
-                        </div>
-                        <div class="faq-answer mt-3 sm:mt-4 text-gray-700 hidden">
-                            <p>O pedido mínimo para atacado é de 6 peças, permitindo flexibilidade na escolha de modelos variados do nosso catálogo online.</p>
-                        </div>
-                    </div>
-                    <!-- Pergunta 2 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle cursor-pointer toggle-faq">
-                        <div class="flex justify-between items-center">
-                            <h3 class="text-base sm:text-lg font-semibold text-dark">Quais as formas de pagamento aceitas?</h3>
-                            <svg class="w-6 h-6 text-primary transform transition-transform duration-300" data-lucide="chevron-down"></svg>
-                        </div>
-                        <div class="faq-answer mt-3 sm:mt-4 text-gray-700 hidden">
-                            <p>Aceitamos Pix, transferência bancária e cartão de crédito (com opções de parcelamento). Entre em contato para detalhes sobre condições e bandeiras aceitas.</p>
-                        </div>
-                    </div>
-                    <!-- Pergunta 3 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle cursor-pointer toggle-faq">
-                        <div class="flex justify-between items-center">
-                            <h3 class="text-base sm:text-lg font-semibold text-dark">Vocês enviam para todo o Brasil?</h3>
-                            <svg class="w-6 h-6 text-primary transform transition-transform duration-300" data-lucide="chevron-down"></svg>
-                        </div>
-                        <div class="faq-answer mt-3 sm:mt-4 text-gray-700 hidden">
-                            <p>Sim! Realizamos envios para todo o território nacional via Correios e transportadoras parceiras, garantindo entrega segura e eficiente.</p>
-                        </div>
-                    </div>
-                    <!-- Pergunta 4 -->
-                    <div class="bg-white p-6 sm:p-8 rounded-xl shadow-subtle cursor-pointer toggle-faq">
-                        <div class="flex justify-between items-center">
-                            <h3 class="text-base sm:text-lg font-semibold text-dark">Como faço para me tornar uma revendedora?</h3>
-                            <svg class="w-6 h-6 text-primary transform transition-transform duration-300" data-lucide="chevron-down"></svg>
-                        </div>
-                        <div class="faq-answer mt-3 sm:mt-4 text-gray-700 hidden">
-                            <p>É simples! Preencha o formulário de cadastro nesta página e uma de nossas consultoras entrará em contato para te guiar nos próximos passos.</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Seção de Impulso de Vendas (Download de Fotos/Vídeos) -->
-        <section class="container mx-auto px-4 py-16 sm:py-20 flex flex-col md:flex-row items-start justify-center gap-10 sm:gap-16">
-            <!-- Imagem Ilustrativa -->
-            <div class="w-full md:w-1/2 rounded-xl shadow-subtle overflow-hidden">
-                <img src="https://placehold.co/600x400/C8A88E/6B4F4F?text=Materiais+Exclusivos" alt="Materiais de Marketing" class="w-full h-auto object-cover">
-            </div>
-            <!-- Conteúdo de Impulso de Vendas -->
-            <div class="w-full md:w-1/2 bg-white p-8 sm:p-10 rounded-xl shadow-subtle text-center md:text-left">
-                <h2 class="text-2xl sm:text-3xl font-bold text-primary mb-6 sm:mb-8 leading-tight">Recursos para Impulsionar Suas Vendas!</h2>
-                <p class="text-gray-700 text-base sm:text-lg mb-8 sm:mb-10">Oferecemos materiais de marketing de alta qualidade para você divulgar nossos produtos com profissionalismo. Acesse fotos e vídeos exclusivos para suas redes sociais e loja!</p>
-                <div class="flex flex-col sm:flex-row gap-3 sm:gap-4 justify-center md:justify-start">
-                    <a href="#" class="bg-primary text-white font-bold py-3 sm:py-4 px-6 sm:px-8 rounded-full shadow-md hover:bg-secondary transition duration-300 text-base sm:text-lg inline-flex items-center justify-center">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                        Baixar Fotos
-                    </a>
-                    <a href="#" class="bg-primary text-white font-bold py-3 sm:py-4 px-6 sm:px-8 rounded-full shadow-md hover:bg-secondary transition duration-300 text-base sm:text-lg inline-flex items-center justify-center">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M4 10h7a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1v-2a1 1 0 011-1z"></path></svg>
-                        Baixar Vídeos
-                    </a>
-                </div>
-                <p class="mt-4 sm:mt-6 text-xs sm:text-sm text-gray-700">Conteúdo otimizado para sua divulgação.</p>
-            </div>
-        </section>
-    </main>
-
-    <!-- Rodapé -->
-    <footer class="bg-dark text-white py-8 sm:py-12">
-        <div class="container mx-auto px-4 text-center text-xs sm:text-sm">
-            <p>&copy; 2024 Primor Modas Atacado. Todos os direitos reservados.</p>
-            <p class="mt-3 sm:mt-4 text-gray-400">Elegância e Qualidade para o seu Negócio.</p>
-            <div class="flex justify-center space-x-4 sm:space-x-6 mt-4 sm:mt-6 text-gray-300">
-                <a href="#" class="hover:text-secondary transition duration-200">Política de Privacidade</a>
-                <span class="text-gray-600">|</span>
-                <a href="#" class="hover:text-secondary transition duration-200">Termos de Uso</a>
-            </div>
-        </div>
-    </footer>
-
-    <!-- Ícones Lucide para um visual limpo e moderno -->
-    <script src="https://cdn.jsdelivr.net/npm/lucide-icons@latest"></script>
-    <script>
-        // Lógica para o menu mobile
-        const mobileMenuButton = document.getElementById('mobile-menu-button');
-        const mobileMenu = document.getElementById('mobile-menu');
-
-        mobileMenuButton.addEventListener('click', () => {
-            mobileMenu.classList.toggle('hidden');
-        });
-
-        // Lógica para expandir/recolher as Perguntas Frequentes (FAQ)
-        document.querySelectorAll('.toggle-faq').forEach(item => {
-            item.addEventListener('click', event => {
-                const answer = item.querySelector('.faq-answer');
-                const icon = item.querySelector('svg');
-                answer.classList.toggle('hidden');
-                icon.classList.toggle('rotate-180'); // Gira o ícone para indicar expansão
-            });
-        });
-
-        // Lógica para "Ver Mais Feedbacks" (simulação)
-        const loadMoreFeedbacksButton = document.getElementById('load-more-feedbacks');
-        const feedbackContainer = document.getElementById('feedback-container');
-        const allFeedbacks = [
-            // Feedbacks iniciais já no HTML
-            { text: "A qualidade das roupas da Primor Modas é impecável! Minhas clientes amam e as vendas aumentaram muito desde que comecei a revender. O atendimento é sempre excelente e as entregas são super rápidas. Recomendo muito para quem busca moda evangélica de verdade.", author: "Ana Paula, Lojista em SP" },
-            { text: "Estou muito satisfeita com a variedade e os lançamentos semanais. É muito fácil manter meu estoque atualizado e oferecer sempre o melhor para minhas clientes. A equipe de consultoras é muito atenciosa e prestativa.", author: "Carla Regina, Revendedora em MG" },
-            { text: "Os preços de atacado da Primor Modas me permitem ter uma margem de lucro excelente. Além disso, a facilidade de comprar online pelo catálogo é um diferencial enorme. Recomendo a todas as lojistas e revendedoras!", author: "Patrícia Lima, Lojista em RJ" },
-            // Novos feedbacks para carregar
-            { text: "Nunca vi uma coleção tão linda e versátil como a da Primor Modas. Consigo atender a todos os gostos das minhas clientes. O sucesso é garantido!", author: "Fernanda Costa, Proprietária de Boutique" },
-            { text: "O suporte ao cliente é incrível! Sempre que preciso, sou prontamente atendida e minhas dúvidas são resolvidas. Isso faz toda a diferença no dia a dia da minha loja.", author: "Juliana Santos, Empreendedora" },
-            { text: "Os materiais de marketing que a Primor Modas disponibiliza são fantásticos. Me ajudam muito na divulgação e na criação de conteúdo para minhas redes sociais. Super profissional!", author: "Mariana Oliveira, Digital Influencer" },
-            { text: "A entrega é super rápida e as peças vêm embaladas com muito cuidado. Isso mostra o carinho e o profissionalismo da Primor Modas. Recomendo de olhos fechados!", author: "Beatriz Almeida, Lojista Virtual" },
-            { text: "Adoro a praticidade de comprar pelo catálogo online. É muito intuitivo e consigo fazer meus pedidos a qualquer hora e de qualquer lugar. Perfeito para quem tem uma rotina corrida.", author: "Gabriela Pereira, Mãe e Revendedora" },
-            { text: "A moda evangélica da Primor Modas é moderna e elegante. É difícil encontrar peças que unam beleza, conforto e decência. Vocês arrasam!", author: "Silvia Rocha, Cliente Atacadista" },
-            { text: "O relacionamento com a consultora é um grande diferencial. Me sinto muito mais segura para fazer minhas compras e planejar minhas coleções.", author: "Renata Dantas, Gerente de Loja" }
-        ];
-
-        let loadedFeedbacksCount = 3; // Contagem inicial de feedbacks visíveis
-
-        loadMoreFeedbacksButton.addEventListener('click', () => {
-            const nextFeedbacks = allFeedbacks.slice(loadedFeedbacksCount, loadedFeedbacksCount + 3); // Carrega mais 3
-            nextFeedbacks.forEach(feedback => {
-                const newFeedbackDiv = document.createElement('div');
-                newFeedbackDiv.classList.add('bg-white', 'p-6', 'sm:p-8', 'rounded-xl', 'shadow-subtle', 'flex', 'flex-col', 'items-center', 'justify-between', 'transition', 'transform', 'hover:-translate-y-1', 'duration-300', 'cursor-pointer');
-                newFeedbackDiv.innerHTML = `
-                    <div class="mb-4 sm:mb-6">
-                        <span class="text-secondary text-4xl sm:text-5xl leading-none block mb-2">“</span>
-                        <p class="italic text-gray-700 text-base sm:text-lg line-clamp-4" data-full-text="${feedback.text}">${feedback.text}</p>
-                        <span class="text-secondary text-4xl sm:text-5xl leading-none block mt-2">”</span>
-                    </div>
-                    <p class="font-semibold text-dark mt-4 text-sm sm:text-base">- ${feedback.author}</p>
-                `;
-                feedbackContainer.appendChild(newFeedbackDiv);
-                loadedFeedbacksCount++;
+                setIsAuthReady(true); // Set auth ready flag
             });
 
-            // Esconde o botão se todos os feedbacks foram carregados
-            if (loadedFeedbacksCount >= allFeedbacks.length) {
-                loadMoreFeedbacksButton.style.display = 'none';
+            // If an initial custom auth token is provided, sign in with it.
+            // This is typically for Canvas environment.
+            if (initialAuthToken) {
+                console.log('Signing in with custom token...');
+                signInWithCustomToken(firebaseAuth, initialAuthToken)
+                    .then(() => console.log('Signed in with custom token'))
+                    .catch(error => console.error('Error signing in with custom token:', error));
             }
-        });
 
-        // Lógica para "Ver Mais Lançamentos" (simulação)
-        const loadMoreLancamentosButton = document.getElementById('load-more-lancamentos');
-        const lancamentosGrid = document.getElementById('lancamentos-grid');
-        const hiddenLancamentos = lancamentosGrid.querySelectorAll('.hidden'); // Seleciona os itens inicialmente ocultos
+            return () => {
+                unsubscribeAuth(); // Clean up auth listener on component unmount
+            };
+        } catch (error) {
+            console.error("Erro ao inicializar Firebase:", error);
+            setMessage({ text: 'Erro ao inicializar o Firebase. Verifique a configuração.', type: 'error' });
+        }
+    }, [initialAuthToken, firebaseConfig]);
 
-        loadMoreLancamentosButton.addEventListener('click', () => {
-            let loadedCount = 0;
-            // Mostra os próximos 3 itens ocultos
-            for (let i = 0; i < hiddenLancamentos.length && loadedCount < 3; i++) {
-                if (hiddenLancamentos[i].classList.contains('hidden')) {
-                    hiddenLancamentos[i].classList.remove('hidden');
-                    loadedCount++;
+    // ---------------------------------------------------
+    // Real-time Patient Data Listener (Firestore)
+    // ---------------------------------------------------
+    useEffect(() => {
+        if (!db || !auth || !isAuthReady || !userId) {
+            console.log('Firebase not ready for data fetching.');
+            return;
+        }
+
+        const patientsCollectionRef = collection(db, `artifacts/${appId}/public/data/patients`);
+        // Modified query: Removed orderBy to avoid index requirement. Data will be sorted client-side.
+        const q = query(patientsCollectionRef);
+
+        const unsubscribeSnapshot = onSnapshot(q, (snapshot) => {
+            const fetchedPatients = snapshot.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data()
+            }));
+
+            // Client-side sorting: first by urgency level, then by timestamp (earliest first).
+            const sortedFetchedPatients = [...fetchedPatients].sort((a, b) => {
+                if (a.urgencyLevel !== b.urgencyLevel) {
+                    return a.urgencyLevel - b.urgencyLevel;
                 }
-            }
+                // Ensure timestamp exists before comparing toMillis
+                const timestampA = a.timestamp ? a.timestamp.toMillis() : 0;
+                const timestampB = b.timestamp ? b.timestamp.toMillis() : 0;
+                return timestampA - timestampB;
+            });
 
-            // Esconde o botão se todos os lançamentos foram carregados
-            const remainingHidden = lancamentosGrid.querySelectorAll('.hidden').length;
-            if (remainingHidden === 0) {
-                loadMoreLancamentosButton.style.display = 'none';
-            }
+            // Filter out patients currently being served from the main queue display
+            const queuePatients = sortedFetchedPatients.filter(p => !p.isServing);
+            setPatients(queuePatients);
+
+            // Find the patient currently being served
+            const servingPatient = fetchedPatients.find(p => p.isServing); // Search in unsorted fetchedPatients for the serving one
+            setCurrentServing(servingPatient || null);
+
+            // Update password counters for next generation
+            const counters = {};
+            urgencyLevels.forEach(level => {
+                const prefix = level.name.substring(0, 1).toUpperCase();
+                const lastNum = fetchedPatients // Use unsorted fetchedPatients for accurate counter based on all existing patients
+                    .filter(p => p.urgency === level.name)
+                    .reduce((max, p) => {
+                        const num = parseInt(p.password.split('-')[1]);
+                        return isNaN(num) ? max : Math.max(max, num);
+                    }, 0);
+                counters[prefix] = lastNum + 1;
+            });
+            setPasswordCounter(counters);
+
+            console.log("Dados de pacientes atualizados.");
+        }, (error) => {
+            console.error("Erro ao carregar dados de pacientes:", error);
+            setMessage({ text: 'Erro ao carregar pacientes do Firestore.', type: 'error' });
         });
-    </script>
-</body>
-</html>
+
+        // Clean up snapshot listener on component unmount
+        return () => unsubscribeSnapshot();
+    }, [db, auth, isAuthReady, userId]); // Re-run if db, auth, or authReady state changes
+
+    // ---------------------------------------------------
+    // Helper Functions
+    // ---------------------------------------------------
+
+    /**
+     * Shows a temporary message to the user.
+     * @param {string} text - The message text.
+     * @param {string} type - 'success' or 'error' for styling.
+     */
+    const showMessage = (text, type) => {
+        setMessage({ text, type });
+        setTimeout(() => setMessage({ text: '', type: '' }), 3000); // Clear message after 3 seconds
+    };
+
+    /**
+     * Displays a confirmation modal before performing a critical action.
+     * @param {function} actionFunction - The function to call if confirmed.
+     * @param {string} messageText - The message to display in the modal.
+     */
+    const showConfirmation = (actionFunction, messageText) => {
+        confirmActionRef.current = actionFunction;
+        setMessage({ text: messageText, type: 'confirm' }); // Use 'confirm' type for modal
+        setShowConfirmModal(true);
+    };
+
+    /**
+     * Handles confirmation from the modal.
+     */
+    const handleConfirm = () => {
+        if (confirmActionRef.current) {
+            confirmActionRef.current();
+        }
+        setShowConfirmModal(false);
+        setMessage({ text: '', type: '' });
+    };
+
+    /**
+     * Handles cancellation from the modal.
+     */
+    const handleCancel = () => {
+        setShowConfirmModal(false);
+        setMessage({ text: '', type: '' });
+    };
+
+    // ---------------------------------------------------
+    // CRUD Operations (Firestore)
+    // ---------------------------------------------------
+
+    /**
+     * Adds a new patient to the Firestore collection.
+     */
+    const addPatient = async () => {
+        if (!db || !userId) {
+            showMessage('Erro: Firebase não está pronto.', 'error');
+            return;
+        }
+
+        const selectedUrgency = urgencyLevels.find(level => level.name === newPatientUrgency);
+        if (!selectedUrgency) {
+            showMessage('Por favor, selecione uma categoria de urgência válida.', 'error');
+            return;
+        }
+
+        const prefix = newPatientUrgency.substring(0, 1).toUpperCase();
+        // Ensure passwordCounter has been initialized before attempting to access prefix
+        const nextNumber = (passwordCounter[prefix] !== undefined ? passwordCounter[prefix] : 1); // Default to 1 if no previous count
+        const password = `${prefix}-${String(nextNumber).padStart(3, '0')}`;
+
+        try {
+            await addDoc(collection(db, `artifacts/${appId}/public/data/patients`), {
+                name: newPatientName || 'Paciente sem nome',
+                urgency: newPatientUrgency,
+                urgencyLevel: selectedUrgency.level, // Store numeric level for easy sorting
+                password: password,
+                timestamp: serverTimestamp(), // Use server timestamp for reliable ordering
+                isServing: false, // Flag to indicate if patient is currently being served
+            });
+            setNewPatientName('');
+            showMessage(`Senha ${password} adicionada com sucesso!`, 'success');
+        } catch (error) {
+            console.error("Erro ao adicionar paciente:", error);
+            showMessage('Erro ao adicionar paciente. Tente novamente.', 'error');
+        }
+    };
+
+    /**
+     * Calls the next patient in the queue based on urgency and timestamp.
+     * This moves the patient from the queue to 'currentServing'.
+     */
+    const callNextPatient = async () => {
+        if (!db || !userId) {
+            showMessage('Erro: Firebase não está pronto.', 'error');
+            return;
+        }
+
+        // If there's a patient currently being served, ask for confirmation to finish.
+        if (currentServing) {
+            showConfirmation(() => actuallyCallNextPatient(), 'Já existe um paciente sendo atendido. Deseja finalizar o atendimento atual e chamar o próximo?');
+        } else {
+            actuallyCallNextPatient();
+        }
+    };
+
+    const actuallyCallNextPatient = async () => {
+        // Clear current serving if any, to allow new patient to be called
+        if (currentServing) {
+            try {
+                await updateDoc(doc(db, `artifacts/${appId}/public/data/patients`, currentServing.id), {
+                    isServing: false, // Mark as no longer serving
+                    // Optionally, you could delete the document here if you don't need a history
+                });
+                console.log(`Paciente ${currentServing.password} finalizado.`);
+            } catch (error) {
+                console.error("Erro ao finalizar paciente atual:", error);
+                showMessage('Erro ao finalizar paciente atual.', 'error');
+                return; // Stop if finishing fails
+            }
+        }
+
+        // Sort patients to find the next one:
+        // 1. By urgency level (lowest first - higher priority)
+        // 2. By timestamp (earliest first - FIFO within same urgency)
+        const sortedPatients = [...patients].sort((a, b) => {
+            if (a.urgencyLevel !== b.urgencyLevel) {
+                return a.urgencyLevel - b.urgencyLevel;
+            }
+            // Ensure timestamp exists before comparing toMillis
+            const timestampA = a.timestamp ? a.timestamp.toMillis() : 0;
+            const timestampB = b.timestamp ? b.timestamp.toMillis() : 0;
+            return timestampA - timestampB; // Compare timestamps
+        });
+
+        const nextPatient = sortedPatients[0];
+
+        if (nextPatient) {
+            try {
+                await updateDoc(doc(db, `artifacts/${appId}/public/data/patients`, nextPatient.id), {
+                    isServing: true,
+                });
+                showMessage(`Chamando senha: ${nextPatient.password} (${nextPatient.urgency})`, 'success');
+            } catch (error) {
+                console.error("Erro ao chamar próximo paciente:", error);
+                showMessage('Erro ao chamar o próximo paciente. Tente novamente.', 'error');
+            }
+        } else {
+            showMessage('Não há pacientes na fila para chamar.', 'info');
+        }
+    };
+
+    /**
+     * Marks the currently serving patient as finished (removes them from the display).
+     * Optionally, could delete the document from Firestore or move to a 'history' collection.
+     */
+    const finishServing = async () => {
+        if (!db || !userId || !currentServing) {
+            showMessage('Nenhum paciente sendo atendido para finalizar.', 'info');
+            return;
+        }
+
+        showConfirmation(async () => {
+            try {
+                // Delete the document from Firestore after serving
+                await deleteDoc(doc(db, `artifacts/${appId}/public/data/patients`, currentServing.id));
+                showMessage(`Atendimento da senha ${currentServing.password} finalizado.`, 'success');
+            } catch (error) {
+                console.error("Erro ao finalizar atendimento:", error);
+                showMessage('Erro ao finalizar atendimento. Tente novamente.', 'error');
+            }
+        }, 'Deseja realmente finalizar o atendimento do paciente atual?');
+    };
+
+    /**
+     * Removes a specific patient from the queue.
+     * @param {string} patientId - The ID of the patient document to remove.
+     */
+    const removePatientFromQueue = async (patientId) => {
+        if (!db || !userId) {
+            showMessage('Erro: Firebase não está pronto.', 'error');
+            return;
+        }
+
+        showConfirmation(async () => {
+            try {
+                await deleteDoc(doc(db, `artifacts/${appId}/public/data/patients`, patientId));
+                showMessage('Paciente removido da fila.', 'success');
+            } catch (error) {
+                console.error("Erro ao remover paciente:", error);
+                showMessage('Erro ao remover paciente da fila. Tente novamente.', 'error');
+            }
+        }, 'Deseja realmente remover este paciente da fila?');
+    };
+
+    // ---------------------------------------------------
+    // Render UI
+    // ---------------------------------------------------
+    return (
+        <div className="min-h-screen bg-gray-100 font-sans antialiased text-gray-800 flex flex-col p-4 sm:p-6 lg:p-8">
+            {/* Tailwind CSS CDN - Ensure it's loaded for styling */}
+            <script src="https://cdn.tailwindcss.com"></script>
+            {/* Font "Inter" for a clean look */}
+            <style>
+                {`
+                @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+                body {
+                    font-family: 'Inter', sans-serif;
+                }
+                .scroll-container {
+                    -ms-overflow-style: none; /* IE and Edge */
+                    scrollbar-width: none; /* Firefox */
+                }
+                .scroll-container::-webkit-scrollbar {
+                    display: none; /* Chrome, Safari, Opera */
+                }
+                `}
+            </style>
+
+            <header className="bg-gradient-to-r from-blue-600 to-indigo-700 text-white p-4 sm:p-6 rounded-lg shadow-lg mb-6 text-center">
+                <h1 className="text-3xl sm:text-4xl font-bold mb-2">Gerenciador de Senhas Hospitalar</h1>
+                <p className="text-lg sm:text-xl opacity-90">Priorizando Atendimentos por Urgência</p>
+                {userId && (
+                    <div className="text-sm mt-2 opacity-80">
+                        ID do Usuário: <span className="font-mono bg-white bg-opacity-20 px-2 py-1 rounded-md break-all">{userId}</span>
+                    </div>
+                )}
+            </header>
+
+            {/* Message Display */}
+            {message.text && message.type !== 'confirm' && (
+                <div className={`fixed top-4 right-4 p-4 rounded-lg shadow-xl z-50 transition-transform transform ${message.type === 'success' ? 'bg-green-100 text-green-800 border border-green-200' : 'bg-red-100 text-red-800 border border-red-200'} ${message.text ? 'translate-x-0' : 'translate-x-full'}`}>
+                    {message.text}
+                </div>
+            )}
+
+            {/* Confirmation Modal */}
+            {showConfirmModal && (
+                <div className="fixed inset-0 bg-gray-600 bg-opacity-75 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white p-6 rounded-lg shadow-xl max-w-sm w-full text-center">
+                        <h3 className="text-xl font-semibold mb-4 text-gray-900">Confirmação Necessária</h3>
+                        <p className="mb-6 text-gray-700">{message.text}</p>
+                        <div className="flex justify-center space-x-4">
+                            <button
+                                onClick={handleConfirm}
+                                className="px-6 py-2 bg-blue-600 text-white font-medium rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-150 ease-in-out shadow-md"
+                            >
+                                Confirmar
+                            </button>
+                            <button
+                                onClick={handleCancel}
+                                className="px-6 py-2 bg-gray-300 text-gray-800 font-medium rounded-md hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 transition duration-150 ease-in-out shadow-md"
+                            >
+                                Cancelar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <main className="flex flex-col lg:flex-row gap-6">
+                {/* Panel Esquerdo: Adicionar Paciente e Controles */}
+                <section className="bg-white p-6 rounded-lg shadow-md lg:w-1/3 flex-shrink-0">
+                    <h2 className="text-2xl font-bold mb-4 text-gray-900 border-b pb-2">Adicionar Novo Paciente</h2>
+                    <div className="mb-4">
+                        <label htmlFor="patientName" className="block text-sm font-medium text-gray-700 mb-1">
+                            Nome do Paciente (Opcional)
+                        </label>
+                        <input
+                            type="text"
+                            id="patientName"
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition duration-150 ease-in-out"
+                            value={newPatientName}
+                            onChange={(e) => setNewPatientName(e.target.value)}
+                            placeholder="Ex: João Silva"
+                        />
+                    </div>
+                    <div className="mb-6">
+                        <label htmlFor="urgency" className="block text-sm font-medium text-gray-700 mb-1">
+                            Categoria de Urgência
+                        </label>
+                        <select
+                            id="urgency"
+                            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm transition duration-150 ease-in-out"
+                            value={newPatientUrgency}
+                            onChange={(e) => setNewPatientUrgency(e.target.value)}
+                        >
+                            {urgencyLevels.map((level) => (
+                                <option key={level.name} value={level.name}>
+                                    {level.name} - {level.description}
+                                </option>
+                            ))}
+                        </select>
+                    </div>
+                    <button
+                        onClick={addPatient}
+                        className="w-full bg-blue-600 text-white py-3 rounded-md font-semibold text-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition duration-150 ease-in-out transform hover:scale-105"
+                    >
+                        Gerar Senha
+                    </button>
+
+                    <h2 className="text-2xl font-bold mt-8 mb-4 text-gray-900 border-b pb-2">Controles de Atendimento</h2>
+                    <div className="space-y-4">
+                        <button
+                            onClick={callNextPatient}
+                            className="w-full bg-green-600 text-white py-3 rounded-md font-semibold text-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition duration-150 ease-in-out transform hover:scale-105"
+                        >
+                            Chamar Próximo Paciente
+                        </button>
+                        <button
+                            onClick={finishServing}
+                            className="w-full bg-red-600 text-white py-3 rounded-md font-semibold text-lg shadow-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition duration-150 ease-in-out transform hover:scale-105"
+                        >
+                            Finalizar Atendimento Atual
+                        </button>
+                    </div>
+                </section>
+
+                {/* Painel Central: Paciente em Atendimento e Legenda de Urgência */}
+                <section className="flex flex-col lg:w-2/3 gap-6">
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h2 className="text-2xl font-bold mb-4 text-gray-900 border-b pb-2">Paciente em Atendimento</h2>
+                        <div className="min-h-[120px] flex items-center justify-center p-4">
+                            {currentServing ? (
+                                <div className={`p-6 rounded-lg shadow-inner ${urgencyLevels.find(l => l.name === currentServing.urgency)?.color || 'bg-gray-200'} text-center w-full max-w-sm transform transition-transform duration-300 ease-in-out scale-100 hover:scale-105`}>
+                                    <p className={`text-4xl sm:text-5xl font-extrabold ${urgencyLevels.find(l => l.name === currentServing.urgency)?.text || 'text-gray-800'}`}>
+                                        {currentServing.password}
+                                    </p>
+                                    <p className={`text-xl font-semibold mt-2 ${urgencyLevels.find(l => l.name === currentServing.urgency)?.text || 'text-gray-700'}`}>
+                                        ({currentServing.urgency})
+                                    </p>
+                                    <p className="text-md mt-1 text-gray-700">
+                                        {currentServing.name}
+                                    </p>
+                                </div>
+                            ) : (
+                                <p className="text-xl text-gray-600">Nenhum paciente sendo atendido no momento.</p>
+                            )}
+                        </div>
+                    </div>
+
+                    <div className="bg-white p-6 rounded-lg shadow-md">
+                        <h2 className="text-2xl font-bold mb-4 text-gray-900 border-b pb-2">Legenda de Urgência</h2>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {urgencyLevels.map((level) => (
+                                <div key={level.name} className="flex items-center p-3 rounded-md bg-gray-50 border border-gray-200 shadow-sm">
+                                    <div className={`w-6 h-6 rounded-full mr-3 ${level.color} flex-shrink-0`}></div>
+                                    <div>
+                                        <p className="font-semibold text-gray-800">{level.name}</p>
+                                        <p className="text-sm text-gray-600">{level.description}</p>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </section>
+            </main>
+
+            {/* Painel Inferior: Fila de Espera */}
+            <section className="bg-white p-6 rounded-lg shadow-md mt-6">
+                <h2 className="text-2xl font-bold mb-4 text-gray-900 border-b pb-2">Fila de Espera ({patients.length} pacientes)</h2>
+                {patients.length === 0 ? (
+                    <p className="text-lg text-gray-600 text-center py-4">A fila de espera está vazia.</p>
+                ) : (
+                    <div className="overflow-x-auto scroll-container">
+                        <table className="min-w-full divide-y divide-gray-200">
+                            <thead className="bg-gray-50">
+                                <tr>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider rounded-tl-lg">
+                                        Senha
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Nome
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Urgência
+                                    </th>
+                                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                                        Chegada
+                                    </th>
+                                    <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider rounded-tr-lg">
+                                        Ações
+                                    </th>
+                                </tr>
+                            </thead>
+                            <tbody className="bg-white divide-y divide-gray-200">
+                                {patients.map((patient) => {
+                                    const urgencyInfo = urgencyLevels.find(l => l.name === patient.urgency);
+                                    const time = patient.timestamp ? new Date(patient.timestamp.seconds * 1000).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : 'N/A';
+
+                                    return (
+                                        <tr key={patient.id} className="hover:bg-gray-50 transition-colors duration-150 ease-in-out">
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className={`font-semibold text-lg ${urgencyInfo?.text || 'text-gray-900'}`}>{patient.password}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm text-gray-900">{patient.name}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${urgencyInfo?.color || 'bg-gray-200'} ${urgencyInfo?.text || 'text-gray-800'}`}>
+                                                    {patient.urgency}
+                                                </span>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap">
+                                                <div className="text-sm text-gray-500">{time}</div>
+                                            </td>
+                                            <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                                                <button
+                                                    onClick={() => removePatientFromQueue(patient.id)}
+                                                    className="text-red-600 hover:text-red-900 ml-4 transition duration-150 ease-in-out transform hover:scale-110"
+                                                    title="Remover da Fila"
+                                                >
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 inline-block" viewBox="0 0 20 20" fill="currentColor">
+                                                        <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 011-1h4a1 1 0 110 2H8a1 1 0 01-1-1zm1 3a1 1 0 011-1h2a1 1 0 110 2H9a1 1 0 01-1-1zm1 3a1 1 0 000 2h2a1 1 0 100-2H9z" clipRule="evenodd" />
+                                                    </svg>
+                                                    <span className="sr-only">Remover</span>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    );
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </section>
+        </div>
+    );
+}
